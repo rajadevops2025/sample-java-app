@@ -1,25 +1,37 @@
-# Use a lightweight JDK image
-FROM openjdk:17-jdk-slim
+# Use official OpenJDK image with slim Debian base
+FROM eclipse-temurin:17-jdk-jammy as builder
 
-# Set a non-root user for security
-RUN addgroup --system appgroup && adduser --system --group appuser
+# Build stage (optional - can use multi-stage build to reduce final image size)
+WORKDIR /workspace/app
+COPY . .
+RUN ./mvnw clean package -DskipTests
+
+# Final image
+FROM eclipse-temurin:17-jre-jammy
+
+# Set app user and group
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+# Create app directory and set permissions
+RUN mkdir -p /app && chown appuser:appgroup /app
+WORKDIR /app
 USER appuser
 
-# Set working directory inside the container
-WORKDIR /app
+# Copy the built JAR from builder stage or host
+COPY --from=builder /workspace/app/target/demo-*.jar app.jar
+# OR if building locally: COPY target/demo-*.jar app.jar
 
-# Copy the built JAR file from the target directory
-COPY target/demo-1.0.0.jar app.jar
+# Set default environment variables
+ENV SPRING_PROFILES_ACTIVE=prod \
+    JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0" \
+    SERVER_PORT=9090
 
-# Expose application port
-EXPOSE 9090
+# Expose port (documentation only - doesn't actually publish)
+EXPOSE ${SERVER_PORT}
 
-# Define environment variables (optional)
-ENV SPRING_PROFILES_ACTIVE=prod
+# Health check with Spring Boot Actuator (more reliable)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD curl -fsS http://localhost:${SERVER_PORT}/actuator/health || exit 1
 
-# Run the application
-ENTRYPOINT ["java", "-jar", "app.jar"]
-
-# Health check to verify app is running
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s \
-  CMD curl -f http://localhost:9090/api/hello || exit 1
+# Optimized entrypoint
+ENTRYPOINT ["sh", "-c", "exec java ${JAVA_OPTS} -jar app.jar"]
